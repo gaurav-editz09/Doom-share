@@ -1,0 +1,52 @@
+# ── Core: desktop UI, local audio and speech ──────────────────────────────────
+PyQt6
+sounddevice
+numpy
+google-genai>=2.23.0
+fastapi
+uvicorn[standard]
+cryptography
+qrcode[pil]
+
+# ── Web search & browser control ──────────────────────────────────────────────
+requests
+beautifulsoup4
+duckduckgo-search
+playwright
+
+# ── Automation / input control ────────────────────────────────────────────────
+pyautogui
+pyperclip
+pygetwindow
+
+# ── Vision & media ────────────────────────────────────────────────────────────
+pillow
+opencv-python
+mediapipe>=0.10.20,<1
+mss
+
+# ── System, files & documents ─────────────────────────────────────────────────
+psutil
+send2trash
+youtube-transcript-api
+python-pptx
+openpyxl
+
+# ── Plugin extras: Gmail / Google Calendar (OAuth) ────────────────────────────
+google-api-python-client
+google-auth-oauthlib
+
+# ── Plugin extras: Tuya / Smart Life smart light (home_assistant) ─────────────
+tinytuya
+
+# ── Windows-only (pip skips these automatically on macOS / Linux) ─────────────
+comtypes;   sys_platform == "win32"
+pycaw;      sys_platform == "win32"
+win10toast; sys_platform == "win32"
+pywinauto;  sys_platform == "win32"
+pywin32;    sys_platform == "win32"
+wmi;        sys_platform == "win32"
+
+# macOS / Linux OS actions (volume, brightness, reminders) shell out to native
+# tools (pactl / brightnessctl / osascript / systemd), so no extra Python
+# packages are needed there — nothing Windows-specific is ever pulled in.
