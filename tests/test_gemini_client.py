@@ -1,5 +1,6 @@
 import json
 
+import memory.config_manager as config_manager
 from core import llm_client
 
 
@@ -101,6 +102,15 @@ def test_gemini_stream_preserves_camera_image_mime_type(monkeypatch):
         "mimeType": "image/png",
         "data": "cG5n",
     }
+
+
+def test_get_gemini_key_uses_env_var_when_config_missing(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(config_manager, "load_api_keys", lambda: {})
+    monkeypatch.setenv("GEMINI_API_KEY", "env-gemini-key")
+
+    assert config_manager.get_gemini_key() == "env-gemini-key"
 
 
 def test_configure_gemini_preserves_existing_user_settings(tmp_path, monkeypatch):

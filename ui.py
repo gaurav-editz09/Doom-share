@@ -2845,6 +2845,7 @@ class MainWindow(QMainWindow):
         self._wake_dl_sig.connect(self._on_wake_install_done)
         self._gesture_sig.connect(self._on_gesture_command)
         self._cam_stop = threading.Event()
+        self._cam_thread_lock = threading.Lock()
         self._gesture_mode = False
         self._refresh_gesture_btn()
 
@@ -2901,18 +2902,27 @@ class MainWindow(QMainWindow):
                 )
 
     def start_camera_stream(self, show: bool = False) -> bool:
-        existing = getattr(self, "_cam_thread", None)
-        if existing is not None and existing.is_alive():
-            self._cam_stop.set()
-            existing.join(timeout=0.5)
-            self._cam_thread = None
+        with self._cam_thread_lock:
+            existing = getattr(self, "_cam_thread", None)
+            if existing is not None and existing.is_alive():
+                if not self._cam_stop.is_set():
+                    if show:
+                        self._cam_stream_sig.emit(True)
+                    return False
+                existing.join(timeout=2.0)
+                if existing.is_alive():
+                    raise RuntimeError(
+                        "Previous camera stream is still stopping; try again."
+                    )
 
-        self._cam_stop.clear()
-        self._cam_stream_sig.emit(bool(show))
-        t = threading.Thread(target=self._cam_loop, daemon=True, name="cam-stream")
-        self._cam_thread = t
-        t.start()
-        return True
+            self._cam_stop.clear()
+            self._cam_stream_sig.emit(bool(show))
+            thread = threading.Thread(
+                target=self._cam_loop, daemon=True, name="cam-stream"
+            )
+            self._cam_thread = thread
+            thread.start()
+            return True
 
     def _cam_loop(self) -> None:
         detector = None
@@ -2995,7 +3005,11 @@ class MainWindow(QMainWindow):
                 self._cam_stream_sig.emit(False)
 
     def stop_camera_stream(self) -> None:
-        self._cam_stop.set()
+        with self._cam_thread_lock:
+            self._cam_stop.set()
+            thread = getattr(self, "_cam_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
 
     def closeEvent(self, event):
         self._cam_stop.set()

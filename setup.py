@@ -48,7 +48,7 @@ def main() -> None:
         )
 
     print("\nSetup complete.")
-    print("Run `python main.py`; Doom downloads its local AI and speech models on first launch.")
+    print("Run `python main.py` and enter your Gemini API key on first launch.")
 
 
 if __name__ == "__main__":

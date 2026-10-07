@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import queue
+import re
 import threading
 import time
 from datetime import datetime
@@ -17,8 +18,8 @@ from actions.screen_processor import _capture_screen
 from actions.system_monitor import get_system_status
 from core.action_loader import discover_actions
 from core import confirm as confirm_gate
-from core.llm_client import configure_gemini
 from core.plugin_loader import discover_plugins
+from core.llm_client import configure_gemini
 from core.safety import check_action
 from memory.config_manager import get_assistant_name, get_user_name
 from memory.memory_manager import (
@@ -116,6 +117,41 @@ def _gemini_live_tools(declarations: list[dict]) -> list[dict]:
     }] if declarations else []
 
 
+def _quick_volume_action(text: str) -> str | None:
+    normalized = re.sub(r"[^\w\s]", " ", text.lower())
+    words = normalized.split()
+    audio_terms = {
+        "volume", "sound", "audio", "awaz", "awaaz", "awaaj",
+        "आवाज", "आवाज़", "वॉल्यूम",
+    }
+    down_terms = {"low", "lower", "down", "decrease", "reduce", "less", "kam", "ghata", "ghatao", "कम", "घटा"}
+    up_terms = {"high", "higher", "up", "increase", "raise", "louder", "zyada", "badha", "बढ़ा", "ज्यादा"}
+    command_terms = {
+        "kar", "karo", "kr", "kro", "do", "de", "dena", "dijiye",
+        "please", "set", "turn", "make", "thoda", "thodi", "zara",
+        "कर", "करो", "करना", "दो", "दीजिए", "थोड़ा", "थोड़ी", "जरा",
+    }
+
+    for index, word in enumerate(words):
+        if word not in audio_terms:
+            continue
+        nearby = words[max(0, index - 3):index] + words[index + 1:index + 5]
+        if any(term in nearby for term in down_terms):
+            if not any(term in nearby for term in {"is", "was", "hai", "tha", "है", "था"}):
+                return "volume_down"
+        if any(term in nearby for term in up_terms):
+            if not any(term in nearby for term in {"is", "was", "hai", "tha", "है", "था"}):
+                return "volume_up"
+        if word in audio_terms and any(term in nearby for term in command_terms):
+            direction = next(
+                (term for term in nearby if term in down_terms | up_terms),
+                None,
+            )
+            if direction is not None:
+                return "volume_down" if direction in down_terms else "volume_up"
+    return None
+
+
 async def _wait_for_live_tasks(sender: asyncio.Task, receiver: asyncio.Task) -> None:
     tasks = (sender, receiver)
     try:
@@ -186,7 +222,6 @@ class LocalAssistant:
             + self._actions.get_tool_declarations()
             + self._plugins.get_tool_declarations()
         )
-
         self.ui.get_plugins = self._plugins.list_for_ui
         self.ui.get_plugin_settings = self._plugins.settings_schemas
         self.ui.request_say = self._say
@@ -267,6 +302,20 @@ class LocalAssistant:
         text = text.strip()
         if not text:
             return
+        volume_action = _quick_volume_action(text)
+        if volume_action is not None:
+            if not self._ready.is_set():
+                self._log("SYS: Gemini Live is still connecting. Please wait.")
+                return
+            self._log(f"You: {text}")
+            threading.Thread(
+                target=self._run_quick_volume_action,
+                args=(text, volume_action),
+                daemon=True,
+                name="DoomVolumeControl",
+            ).start()
+            return
+
         loop, session = self._live_loop, self._live_session
         if not self._ready.is_set() or loop is None or session is None:
             self._log("SYS: Gemini Live is still connecting. Please wait.")
@@ -283,6 +332,34 @@ class LocalAssistant:
                 self._log(f"ERR: Could not send message to Gemini Live — {error}")
 
         future.add_done_callback(report_send_error)
+
+    def _run_quick_volume_action(self, text: str, action: str) -> None:
+        self.ui.set_state("THINKING")
+        try:
+            result = self._run_tool("computer_settings", {"action": action})
+            if result.startswith(("Action failed", "Tool '", "Could not")):
+                raise RuntimeError(result)
+            self._log(f"{self.assistant_name}: {result}")
+            hindi_request = bool(
+                re.search(r"[अ-ह]", text)
+                or re.search(
+                    r"\b(?:kar|karo|kr|kro|do|de|kam|ghata|badha|zyada)\b",
+                    text.lower(),
+                )
+            )
+            if action == "volume_down":
+                self._say("Volume kam kar diya." if hindi_request else "Volume lowered.")
+            else:
+                self._say("Volume badha diya." if hindi_request else "Volume increased.")
+        except Exception as exc:
+            self._log(f"ERR: Volume control failed — {exc}")
+            self._say(
+                "Volume control nahi ho paya."
+                if re.search(r"[अ-ह]", text) else "Could not change the volume."
+            )
+        finally:
+            if not self._stop.is_set():
+                self.ui.set_state("LISTENING")
 
     def _run_live_tools(self) -> dict:
         from google.genai import types
@@ -373,9 +450,22 @@ class LocalAssistant:
             async def receive_responses() -> None:
                 response_text = ""
                 input_text = ""
+                turn_volume_handled = False
 
                 async def handle_message(message) -> None:
-                    nonlocal response_text, input_text
+                    nonlocal response_text, input_text, turn_volume_handled
+                    if message.tool_call:
+                        for function_call in message.tool_call.function_calls or []:
+                            args = function_call.args or {}
+                            if (
+                                function_call.name == "computer_settings"
+                                and isinstance(args, dict)
+                                and args.get("action") in {"volume_up", "volume_down"}
+                            ):
+                                turn_volume_handled = True
+                        await self._handle_live_tool_call(
+                            session, message.tool_call, types
+                        )
                     if message.server_content:
                         content = message.server_content
                         if content.input_transcription and content.input_transcription.text:
@@ -391,16 +481,26 @@ class LocalAssistant:
                         if content.interrupted:
                             self.interrupt()
                         if content.turn_complete:
-                            if input_text.strip():
-                                self._log(f"You: {input_text.strip()}")
+                            heard_text = input_text.strip()
+                            if heard_text:
+                                self._log(f"You: {heard_text}")
                                 input_text = ""
+                            volume_action = _quick_volume_action(heard_text)
+                            if volume_action and not turn_volume_handled:
+                                self.interrupt()
+                                response_text = ""
+                                threading.Thread(
+                                    target=self._run_quick_volume_action,
+                                    args=(heard_text, volume_action),
+                                    daemon=True,
+                                    name="DoomVoiceVolumeControl",
+                                ).start()
                             if response_text.strip():
                                 self._log(f"{self.assistant_name}: {response_text.strip()}")
                                 response_text = ""
+                            turn_volume_handled = False
                             if not self._stop.is_set():
                                 self.ui.set_state("LISTENING")
-                    if message.tool_call:
-                        await self._handle_live_tool_call(session, message.tool_call, types)
 
                 await _receive_live_turns(session, handle_message, self._stop)
 
@@ -571,7 +671,7 @@ class LocalAssistant:
             f"{prompt}\n\n"
             f"Assistant name: {self.assistant_name}.\n"
             "Address the user politely without inventing or exposing a local Windows or Microsoft account name.\n"
-            "For all spoken responses, use Indian languages only: Hindi, Hinglish, or another Indian language the user is speaking. Do not answer in English or another country's language unless the user explicitly asks.\n"
+            "For all spoken responses, match the user's language exactly: Hindi, Hinglish, English, or any other language they are speaking. Do not force a different language unless the user explicitly asks for it.\n"
             f"Current local time: {datetime.now().astimezone().isoformat()}.\n"
             "The language model uses Gemini online. Use a tool only when needed; "
             "online tools may access the internet only to fulfill the user's explicit request.\n"

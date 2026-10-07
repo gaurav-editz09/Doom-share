@@ -5,9 +5,14 @@ import threading
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import numpy as np
+import pytest
 from google.genai import types
 
-from core.local_assistant import _gemini_live_tools
+from core.local_assistant import (
+    _gemini_live_tools,
+    _quick_volume_action,
+)
 from core import local_assistant
 from core.tool_declarations import TOOL_DECLARATIONS
 
@@ -100,8 +105,42 @@ def test_live_session_config_uses_audio_and_selected_voice(monkeypatch):
     assert config.speech_config.voice_config.prebuilt_voice_config.voice_name == "Aoede"
     assert config.input_audio_transcription is not None
     assert config.output_audio_transcription is not None
-    assert config.realtime_input_config.automatic_activity_detection.silence_duration_ms == 600
-    assert config.realtime_input_config.automatic_activity_detection.end_of_speech_sensitivity == "END_SENSITIVITY_LOW"
+    assert config.realtime_input_config.automatic_activity_detection.silence_duration_ms == 900
+    assert config.realtime_input_config.automatic_activity_detection.start_of_speech_sensitivity == "START_SENSITIVITY_LOW"
+    assert config.realtime_input_config.automatic_activity_detection.end_of_speech_sensitivity == "END_SENSITIVITY_HIGH"
+
+
+def test_messages_match_user_language(monkeypatch):
+    monkeypatch.setattr(local_assistant, "load_memory", lambda: {})
+    monkeypatch.setattr(local_assistant, "format_memory_for_prompt", lambda memory: "")
+
+    assistant = local_assistant.LocalAssistant.__new__(local_assistant.LocalAssistant)
+    assistant.assistant_name = "Doom"
+    assistant.user_name = ""
+    assistant.base_dir = local_assistant.Path(__file__).resolve().parents[1]
+
+    prompt_text = local_assistant.LocalAssistant._messages(assistant, "")
+    system = prompt_text[0]["content"]
+
+    assert "match the user's language exactly" in system
+    assert "Hindi, Hinglish, English" in system
+
+
+def test_microphone_callback_ignores_low_level_background_noise():
+    def callback(indata):
+        audio = indata.copy()
+        rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+        if rms < 30.0:
+            return False
+        return True
+
+    silence = np.zeros(160, dtype=np.int16)
+    quiet = np.array([10, -6, 14, 8], dtype=np.int16)
+    voice = np.array([240, -180, 320, -420, 260], dtype=np.int16)
+
+    assert callback(silence) is False
+    assert callback(quiet) is False
+    assert callback(voice) is True
 
 
 def test_live_session_connects_with_supported_model(monkeypatch):
@@ -251,6 +290,44 @@ def test_gemini_live_tool_declarations_use_uppercase_schema_types():
     ]
 
 
+@pytest.mark.parametrize(
+    "utterance, expected",
+    [
+        ("volume low kr do", "volume_down"),
+        ("volume kam karo", "volume_down"),
+        ("awaz thoda kam kar do", "volume_down"),
+        ("lower the volume", "volume_down"),
+        ("volume down", "volume_down"),
+        ("volume badha do", "volume_up"),
+        ("turn the sound up", "volume_up"),
+        ("my volume is low", None),
+    ],
+)
+def test_quick_volume_intent(utterance, expected):
+    assert _quick_volume_action(utterance) == expected
+
+
+def test_volume_command_runs_locally_without_model_roundtrip():
+    events = []
+    assistant = local_assistant.LocalAssistant.__new__(local_assistant.LocalAssistant)
+    assistant.ui = SimpleNamespace(set_state=events.append)
+    assistant.assistant_name = "Doom"
+    assistant._stop = threading.Event()
+    assistant._log = events.append
+    assistant._say = lambda text: events.append(f"SAY: {text}")
+
+    def run_tool(name, args):
+        events.append((name, args))
+        return "Done: volume_down."
+
+    assistant._run_tool = run_tool
+
+    assistant._run_quick_volume_action("volume low kr do", "volume_down")
+
+    assert ("computer_settings", {"action": "volume_down"}) in events
+    assert "SAY: Volume kam kar diya." in events
+
+
 def test_camera_tool_captures_image_and_opens_preview(monkeypatch):
     preview_calls = []
     assistant = local_assistant.LocalAssistant.__new__(local_assistant.LocalAssistant)
@@ -304,6 +381,36 @@ def test_camera_tool_does_not_stop_an_existing_camera_stream():
 
     assert "captured" in result
     assert events == [b"gesture-camera-frame"]
+
+
+def test_repeated_camera_tool_requests_capture_distinct_frames():
+    assistant = local_assistant.LocalAssistant.__new__(local_assistant.LocalAssistant)
+    assistant._pending_images = []
+    assistant._camera_frame_lock = threading.Lock()
+    assistant._camera_frame_event = threading.Event()
+    assistant._latest_camera_frame = None
+    frames = iter((b"first-frame", b"second-frame"))
+
+    def start_camera_stream(show):
+        assistant._on_camera_frame(next(frames))
+        return True
+
+    assistant.ui = SimpleNamespace(
+        start_camera_stream=start_camera_stream,
+        stop_camera_stream=lambda: None,
+        show_camera_frame=lambda _image: None,
+    )
+
+    for _ in range(2):
+        result = assistant._run_tool(
+            "screen_process", {"angle": "camera", "text": "what is this"}
+        )
+        assert "captured" in result
+
+    assert [
+        base64.b64decode(image["data"])
+        for image in assistant._pending_images
+    ] == [b"first-frame", b"second-frame"]
 
 
 def test_camera_frame_callback_stores_latest_frame_without_streaming_it(monkeypatch):
