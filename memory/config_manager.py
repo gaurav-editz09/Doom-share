@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from core.paths import get_user_data_dir
 
@@ -38,12 +39,25 @@ def load_api_keys() -> dict:
         return {}
 
 def get_gemini_key() -> str | None:
-    return load_api_keys().get("gemini_api_key")
+    """Return the saved Gemini key, or fall back to a standard environment variable.
+
+    This lets the app connect to Gemini automatically in environments where the
+    API key is supplied outside the app config (for example in CI or a local
+    shell profile) without forcing the user through the setup overlay.
+    """
+    key = load_api_keys().get("gemini_api_key")
+    if key and str(key).strip():
+        return str(key).strip()
+    for env_name in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        env_key = os.environ.get(env_name, "")
+        if env_key and env_key.strip():
+            return env_key.strip()
+    return None
+
 
 def is_configured() -> bool:
     key = get_gemini_key()
     return bool(key and len(key) > 15)
-
 
 def get_assistant_name() -> str:
     """Return the configured assistant name, or 'Doom' if not set."""
@@ -99,7 +113,7 @@ def save_voice(voice_name: str) -> None:
 
 
 def get_wake_word_enabled() -> bool:
-    """Whether local wake-word gating is on (assistant sleeps until 'Hey Jarvis')."""
+    """Whether local wake-word gating is enabled for the assistant."""
     return load_api_keys().get("wake_word_enabled", False)
 
 

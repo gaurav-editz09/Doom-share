@@ -44,6 +44,11 @@ does not require administrator rights.
 ## Licensing
 
 Project source is provided under the MIT License in [LICENSE](./LICENSE).
-Third-party software, model weights, and bundled assets remain subject to their
-respective licenses and terms. Review those terms before redistribution or
-commercial use.
+A bundled notice for attribution and third-party dependency awareness is also
+included in [NOTICE.txt](./NOTICE.txt). For future-proof compliance and
+redistribution review, see the additional licensing pack in [LICENSES/](./LICENSES/).
+
+Third-party software, model weights, bundled assets, Google Gemini services,
+Windows platform components, and any runtime dependencies remain subject to
+their respective licenses and terms. Review those terms before redistribution
+or commercial use.

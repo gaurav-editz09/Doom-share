@@ -198,7 +198,11 @@ class LocalAssistant:
         self.ui.on_audio_device_change = self._reconnect_live
         from memory.config_manager import get_wake_word_enabled
 
-        self._wake_enabled = bool(get_wake_word_enabled())
+        _saved_wake = bool(get_wake_word_enabled())
+        self._wake_enabled = False
+        self._awake = True
+        if _saved_wake:
+            self.ui.write_log("SYS: Wake word is saved, but direct listening is enabled by default for voice-assistant mode.")
         self.ui.wake_is_ready = self._wake_is_ready
         self.ui.wake_get_state = self._wake_get_state
         self.ui.on_wake_toggle = self._toggle_wake_word
@@ -213,11 +217,9 @@ class LocalAssistant:
         threading.Thread(target=self._bootstrap, daemon=True, name="DoomBootstrap").start()
         threading.Thread(target=self._speech_output, daemon=True, name="DoomSpeech").start()
         threading.Thread(target=self._live_audio_output, daemon=True, name="DoomLiveAudio").start()
-        from core.user_identity import get_display_name
-
-        display_name = self.user_name or get_display_name()
-        self._log(f"SYS: Hello, {display_name}. Doom is connecting to Gemini Live.")
-        self._say(f"Hello, {display_name}.")
+        self.ui.set_state("LISTENING")
+        self._log("SYS: Doom is connecting to Gemini Live.")
+        self._say("Hello. I am Doom.")
 
     def _log(self, text: str) -> None:
         self.ui.write_log(text)
@@ -301,10 +303,10 @@ class LocalAssistant:
             "output_audio_transcription": {},
             "realtime_input_config": {
                 "automatic_activity_detection": {
-                    "start_of_speech_sensitivity": "START_SENSITIVITY_HIGH",
-                    "end_of_speech_sensitivity": "END_SENSITIVITY_LOW",
+                    "start_of_speech_sensitivity": "START_SENSITIVITY_LOW",
+                    "end_of_speech_sensitivity": "END_SENSITIVITY_HIGH",
                     "prefix_padding_ms": 300,
-                    "silence_duration_ms": 600,
+                    "silence_duration_ms": 900,
                 },
             },
             "tools": self._live_tools,
@@ -350,14 +352,15 @@ class LocalAssistant:
                     audio_queue.discard_pending()
                     return
                 audio = indata[:, 0].copy()
+                if self._wake_enabled and not self._awake:
+                    if self._wake_detector is not None:
+                        self._wake_detector.feed(audio)
+                    audio_queue.discard_pending()
+                    return
                 if self._wake_detector is not None:
                     self._wake_detector.feed(audio)
-                    if self._wake_enabled and not self._awake:
-                        audio_queue.discard_pending()
-                        return
-                self.ui.set_audio_level(
-                    min(1.0, float(np.sqrt(np.mean(audio.astype(np.float32) ** 2))) / 2600.0)
-                )
+                rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+                self.ui.set_audio_level(min(1.0, rms / 2600.0))
                 audio_queue.put_from_audio_callback(audio.tobytes())
 
             async def send_audio() -> None:
@@ -523,11 +526,12 @@ class LocalAssistant:
 
         if not enabled:
             self._wake_enabled = False
+            self._awake = True
             save_wake_word_enabled(False)
             if self._wake_detector is not None:
                 self._wake_detector.stop()
                 self._wake_detector = None
-            return "Wake word disabled."
+            return "Wake word disabled. Microphone is active without wake detection."
         try:
             from core.wake_word import WakeWordDetector, is_ready
 
@@ -543,7 +547,7 @@ class LocalAssistant:
             self._wake_enabled = True
             self._awake = False
             save_wake_word_enabled(True)
-            return "Wake word enabled. Say Hey Jarvis to wake Doom."
+            return "Wake word enabled. Say the wake phrase to wake Doom."
         except Exception as exc:
             self._log(f"ERR: Wake-word setup failed — {exc}")
             return f"Wake word could not be enabled: {exc}"
@@ -562,15 +566,12 @@ class LocalAssistant:
 
         memory = load_memory()
         memory_text = format_memory_for_prompt(memory)
-        user_name = self.user_name
-        if not user_name:
-            from core.user_identity import get_display_name
-
-            user_name = get_display_name()
+        user_name = self.user_name or "the user"
         system = (
             f"{prompt}\n\n"
             f"Assistant name: {self.assistant_name}.\n"
-            f"Address the user as {user_name}.\n"
+            "Address the user politely without inventing or exposing a local Windows or Microsoft account name.\n"
+            "For all spoken responses, use Indian languages only: Hindi, Hinglish, or another Indian language the user is speaking. Do not answer in English or another country's language unless the user explicitly asks.\n"
             f"Current local time: {datetime.now().astimezone().isoformat()}.\n"
             "The language model uses Gemini online. Use a tool only when needed; "
             "online tools may access the internet only to fulfill the user's explicit request.\n"

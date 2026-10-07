@@ -2721,9 +2721,9 @@ class MainWindow(QMainWindow):
         self.on_voice_change   = None   # callable: () -> None — rebuild session with new voice
         self.on_audio_device_change = None  # callable: () -> None — reopen audio streams
         self._confirm_overlay  = None   # live ConfirmBanner, if one is on screen
-        self.get_plugins       = None   # callable: () -> list[dict], set by JarvisLive
-        self.get_plugin_settings = None # callable: () -> list[dict] settings schemas, set by JarvisLive
-        self.on_wake_toggle    = None   # callable: (enable: bool) -> str, set by JarvisLive
+        self.get_plugins       = None   # callable: () -> list[dict], set by DoomLive
+        self.get_plugin_settings = None # callable: () -> list[dict] settings schemas, set by DoomLive
+        self.on_wake_toggle    = None   # callable: (enable: bool) -> str, set by DoomLive
         self.on_wake_manual    = None   # callable: () -> None — manual sleep/wake
         self.on_gesture_command = None  # callable: (command: str) -> None
         self.wake_get_state    = None   # callable: () -> dict {enabled, awake, ready}
@@ -2901,10 +2901,12 @@ class MainWindow(QMainWindow):
                 )
 
     def start_camera_stream(self, show: bool = False) -> bool:
-        if getattr(self, "_cam_thread", None) is not None:
-            if show:
-                self._cam_stream_sig.emit(True)
-            return False
+        existing = getattr(self, "_cam_thread", None)
+        if existing is not None and existing.is_alive():
+            self._cam_stop.set()
+            existing.join(timeout=0.5)
+            self._cam_thread = None
+
         self._cam_stop.clear()
         self._cam_stream_sig.emit(bool(show))
         t = threading.Thread(target=self._cam_loop, daemon=True, name="cam-stream")
@@ -4203,7 +4205,7 @@ class MainWindow(QMainWindow):
                 self._wake_dl_sig.emit(ok, msg)
             threading.Thread(target=_work, daemon=True).start()
             return
-        # Already downloaded → just flip enabled/disabled through JarvisLive.
+        # Already downloaded → just flip enabled/disabled through DoomLive.
         if self.on_wake_toggle:
             try:
                 self.on_wake_toggle(not st["enabled"])

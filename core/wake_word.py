@@ -1,5 +1,5 @@
 """
-Local wake-word detection for JARVIS ("Hey Jarvis").
+Local wake-word detection using the bundled openwakeword model.
 
 Design goals:
   • ZERO cost when the feature is off — openwakeword is imported ONLY inside
@@ -13,7 +13,8 @@ Design goals:
     network call except the one-time model download the user triggers from the UI.
 
 openwakeword ships small ONNX models (a few MB each) and runs comfortably on a
-CPU. The pretrained wake phrase used here is "Hey Jarvis".
+CPU. The detector here uses the bundled wake-word model that ships with the
+library.
 """
 from __future__ import annotations
 
@@ -24,7 +25,9 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-# Pretrained openwakeword model that listens for "Hey Jarvis".
+# Pretrained bundled model used by the wake-word detector.
+# Keeping this name stable preserves compatibility with the library's bundled
+# model while letting the UI speak about Doom without the old Jarvis branding.
 WAKE_MODEL = "hey_jarvis"
 # Score in [0,1]; above this counts as a detection. Tunable per environment.
 DEFAULT_THRESHOLD = 0.5
@@ -137,7 +140,7 @@ class WakeWordDetector:
         self._ready = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="WakeWordThread")
         self._thread.start()
-        self._logger("Wake word: listening for 'Hey Jarvis'.")
+        self._logger("Wake word: listening for the configured wake phrase.")
         return True
 
     def stop(self) -> None:

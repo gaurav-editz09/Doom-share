@@ -11,10 +11,10 @@ if _platform.system() == "Windows":
 
     class _Popen(_OrigPopen):
         def __init__(self, args, **kwargs):
-            kwargs["creationflags"] = (
-                kwargs.get("creationflags", 0) | _subprocess.CREATE_NO_WINDOW
+            creationflags = kwargs.get("creationflags")
+            kwargs["creationflags"] = (creationflags or 0) | getattr(
+                _subprocess, "CREATE_NO_WINDOW", 0
             )
-            kwargs.pop("startupinfo", None)
             super().__init__(args, **kwargs)
 
     _subprocess.Popen = _Popen
